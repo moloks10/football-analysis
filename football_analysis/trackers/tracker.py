@@ -152,18 +152,19 @@ class Tracker:
         )
         return frame
 
-    def draw_annotations(self, video_frames, tracks, team_ball_control):
+    def draw_annotations(self, video_frames, tracks, team_ball_control, frame_offset=0):
         output_frames = []
-        for frame_num, frame in enumerate(video_frames):
+        for local_num, frame in enumerate(video_frames):
+            frame_num = local_num + frame_offset
             frame = frame.copy()
-            for track_id, player in tracks["players"][frame_num].items():
+            for track_id, player in tracks["players"][local_num].items():
                 color = player.get("team_color", (0, 0, 255))
                 frame = self._draw_ellipse(frame, player["bbox"], color, track_id)
                 if player.get("has_ball"):
                     frame = self._draw_triangle(frame, player["bbox"], (0, 255, 0))
-            for _, ref in tracks["referees"][frame_num].items():
+            for _, ref in tracks["referees"][local_num].items():
                 frame = self._draw_ellipse(frame, ref["bbox"], (0, 255, 255))
-            for _, ball in tracks["ball"][frame_num].items():
+            for _, ball in tracks["ball"][local_num].items():
                 frame = self._draw_triangle(frame, ball["bbox"], (0, 255, 0))
             frame = self._draw_team_ball_control(frame, frame_num, team_ball_control)
             output_frames.append(frame)

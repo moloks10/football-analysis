@@ -67,14 +67,11 @@ def run_pipeline(
             team_ball_control.append(team_ball_control[-1] if team_ball_control else 0)
     team_ball_control = np.array(team_ball_control)
 
-    print("Drawing annotations...")
-    output_frames = tracker.draw_annotations(frames, tracks, team_ball_control)
-    output_frames = cam_est.draw_camera_movement(output_frames, camera_movement)
-    SpeedAndDistanceEstimator().draw_speed_and_distance(output_frames, tracks)
-
-    print(f"Saving video to {output_video_path}...")
+    print("Drawing annotations and saving video...")
     os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
-    save_video(output_frames, output_video_path)
+    _stream_annotated_video(
+        output_video_path, frames, tracks, team_ball_control, camera_movement, tracker, cam_est
+    )
 
     print("Generating heatmaps...")
     HeatmapGenerator().generate(tracks, heatmap_dir)
@@ -84,6 +81,27 @@ def run_pipeline(
 
     print("Done.")
     return tracks, team_ball_control
+
+
+def _stream_annotated_video(output_path, frames, tracks, team_ball_control, camera_movement, tracker, cam_est):
+    """Draw annotations and write one frame at a time to stay within RAM limits."""
+    import cv2
+    h, w = frames[0].shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"XVID")
+    out = cv2.VideoWriter(output_path, fourcc, 24, (w, h))
+    speed_est = SpeedAndDistanceEstimator()
+
+    for frame_num, frame in enumerate(frames):
+        single = [frame]
+        single_tracks = {k: [v[frame_num]] for k, v in tracks.items()}
+
+        annotated = tracker.draw_annotations(single, single_tracks, team_ball_control, frame_offset=frame_num)
+        annotated = cam_est.draw_camera_movement(annotated, [camera_movement[frame_num]])
+        speed_est.draw_speed_and_distance(annotated, single_tracks)
+
+        out.write(annotated[0])
+
+    out.release()
 
 
 def _export_stats(tracks, team_ball_control, output_path):
