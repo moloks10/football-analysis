@@ -1,4 +1,5 @@
 import csv
+import gc
 import os
 from collections import defaultdict
 
@@ -23,18 +24,44 @@ def run_pipeline(
     track_stub="stubs/track_stubs.pkl",
     cam_stub="stubs/camera_movement_stub.pkl",
 ):
-    print("Reading video...")
-    frames = read_video(input_path)
+    import cv2
+
+    use_track_stub = bool(track_stub and os.path.exists(track_stub))
+    use_cam_stub = bool(cam_stub and os.path.exists(cam_stub))
+
+    # Load all frames only when YOLO or optical flow actually needs them.
+    # With both stubs present we only need the first frame.
+    if not use_track_stub or not use_cam_stub:
+        print("Reading video (full load required for YOLO / camera movement)...")
+        frames = read_video(input_path)
+        frame0 = frames[0]
+    else:
+        print("Reading video (first frame only — stubs available)...")
+        cap0 = cv2.VideoCapture(input_path)
+        ret, frame0 = cap0.read()
+        cap0.release()
+        frames = None
 
     print("Tracking objects...")
     tracker = Tracker(model_path)
-    tracks = tracker.get_object_tracks(frames, read_from_stub=True, stub_path=track_stub)
+    tracks = tracker.get_object_tracks(
+        frames if frames is not None else [],
+        read_from_stub=True, stub_path=track_stub,
+    )
     tracker.add_position_to_tracks(tracks)
 
     print("Estimating camera movement...")
-    cam_est = CameraMovementEstimator(frames[0])
-    camera_movement = cam_est.get_camera_movement(frames, read_from_stub=True, stub_path=cam_stub)
+    cam_est = CameraMovementEstimator(frame0)
+    camera_movement = cam_est.get_camera_movement(
+        frames if frames is not None else [],
+        read_from_stub=True, stub_path=cam_stub,
+    )
     cam_est.add_adjust_positions_to_tracks(tracks, camera_movement)
+
+    # Free bulk frames as soon as YOLO + camera movement are done.
+    if frames is not None:
+        del frames
+        gc.collect()
 
     print("Applying perspective transform...")
     ViewTransformer().add_transformed_position_to_tracks(tracks)
@@ -45,14 +72,20 @@ def run_pipeline(
     print("Computing speed and distance...")
     SpeedAndDistanceEstimator().add_speed_and_distance_to_tracks(tracks)
 
+    # Team assignment — stream frames one at a time from disk.
     print("Assigning teams...")
     team_assigner = TeamAssigner()
-    team_assigner.assign_team_color(frames[0], tracks["players"][0])
+    team_assigner.assign_team_color(frame0, tracks["players"][0])
+    cap = cv2.VideoCapture(input_path)
     for frame_num, player_track in enumerate(tracks["players"]):
+        ret, frame = cap.read()
+        if not ret:
+            break
         for player_id, track in player_track.items():
-            team = team_assigner.get_player_team(frames[frame_num], track["bbox"], player_id)
+            team = team_assigner.get_player_team(frame, track["bbox"], player_id)
             tracks["players"][frame_num][player_id]["team"] = team
             tracks["players"][frame_num][player_id]["team_color"] = team_assigner.team_colors[team]
+    cap.release()
 
     print("Assigning ball possession...")
     pba = PlayerBallAssigner()
@@ -70,7 +103,7 @@ def run_pipeline(
     print("Drawing annotations and saving video...")
     os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
     _stream_annotated_video(
-        output_video_path, frames, tracks, team_ball_control, camera_movement, tracker, cam_est
+        output_video_path, input_path, tracks, team_ball_control, camera_movement, tracker, cam_est
     )
 
     print("Generating heatmaps...")
@@ -83,15 +116,21 @@ def run_pipeline(
     return tracks, team_ball_control
 
 
-def _stream_annotated_video(output_path, frames, tracks, team_ball_control, camera_movement, tracker, cam_est):
-    """Draw annotations and write one frame at a time to stay within RAM limits."""
+def _stream_annotated_video(output_path, input_path, tracks, team_ball_control, camera_movement, tracker, cam_est):
+    """Read source video and write annotations one frame at a time to stay within RAM limits."""
     import cv2
-    h, w = frames[0].shape[:2]
+    cap = cv2.VideoCapture(input_path)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fourcc = cv2.VideoWriter_fourcc(*"XVID")
     out = cv2.VideoWriter(output_path, fourcc, 24, (w, h))
     speed_est = SpeedAndDistanceEstimator()
+    frame_num = 0
 
-    for frame_num, frame in enumerate(frames):
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
         single = [frame]
         single_tracks = {k: [v[frame_num]] for k, v in tracks.items()}
 
@@ -100,7 +139,9 @@ def _stream_annotated_video(output_path, frames, tracks, team_ball_control, came
         speed_est.draw_speed_and_distance(annotated, single_tracks)
 
         out.write(annotated[0])
+        frame_num += 1
 
+    cap.release()
     out.release()
 
 
