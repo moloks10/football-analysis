@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.pkl
+*.pt
+models/
+input_videos/
+output_videos/
+stubs/
+.env
+.DS_Store
