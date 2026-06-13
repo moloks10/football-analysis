@@ -77,7 +77,7 @@ if uploaded is not None:
             col.image(
                 os.path.join(heatmap_dir, hf),
                 caption=hf.replace("_", " ").replace(".png", "").title(),
-                use_column_width=True,
+                use_container_width=True,
             )
     else:
         st.info("No heatmaps generated — not enough position data in this clip.")
